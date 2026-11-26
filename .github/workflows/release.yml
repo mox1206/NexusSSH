@@ -99,8 +99,13 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.7"
           channel: stable
           cache: true
+          cache-key: "flutter-3.47.7-:os:-:channel:-:version:-:arch:-:hash:"
+
+      - name: Verify Flutter version
+        run: flutter --version
 
       - name: Flutter pub get
         run: flutter pub get
@@ -154,8 +159,13 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.7"
           channel: stable
           cache: true
+          cache-key: "flutter-3.47.7-:os:-:channel:-:version:-:arch:-:hash:"
+
+      - name: Verify Flutter version
+        run: flutter --version
 
       - name: Configure Android Release Signing
         env:
@@ -234,8 +244,13 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.7"
           channel: stable
           cache: true
+          cache-key: "flutter-3.47.7-:os:-:channel:-:version:-:arch:-:hash:"
+
+      - name: Verify Flutter version
+        run: flutter --version
 
       - name: Flutter pub get
         run: flutter pub get
@@ -277,8 +292,13 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: "3.47.7"
           channel: stable
           cache: true
+          cache-key: "flutter-3.47.7-:os:-:channel:-:version:-:arch:-:hash:"
+
+      - name: Verify Flutter version
+        run: flutter --version
 
       - name: Flutter pub get
         run: flutter pub get
