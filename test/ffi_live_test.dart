@@ -99,24 +99,62 @@ void main() {
 
         // Regression test on Windows: PowerShell launched with measured viewport
         // dimensions (not hardcoded 100x30) keeps cursor aligned on prompt line
-        // even after multi-line Chinese error output.
+        // even after multi-line error output.
         if (Platform.isWindows) {
           final ps = controller.localShells
               .where((s) => s.id == 'powershell' || s.id == 'pwsh')
               .firstOrNull;
           if (ps != null) {
+            Future<bool> waitUntil(
+              bool Function() condition, {
+              Duration timeout = const Duration(seconds: 15),
+            }) async {
+              final deadline = DateTime.now().add(timeout);
+              while (DateTime.now().isBefore(deadline)) {
+                if (condition()) return true;
+                await Future<void>.delayed(const Duration(milliseconds: 100));
+              }
+              return condition();
+            }
+
             final sid = await controller.openLocalSession(shell: ps);
             final session = controller.activeSession!;
             session.terminal.resize(95, 28);
-            await Future<void>.delayed(const Duration(milliseconds: 1200));
 
+            String currentLineText() {
+              final buf = session.terminal.buffer;
+              return buf.lines[buf.absoluteCursorY].getText().trimRight();
+            }
+
+            // Wait for PowerShell cold startup (can take several seconds on CI VMs)
+            final promptReady = await waitUntil(
+              () => currentLineText().contains('PS '),
+            );
+            expect(
+              promptReady,
+              isTrue,
+              reason: 'PowerShell prompt did not appear in time: "${currentLineText()}"',
+            );
+
+            final initialCursorY = session.terminal.buffer.absoluteCursorY;
             session.terminal.textInput('badcmd_align_check\r');
-            await Future<void>.delayed(const Duration(milliseconds: 700));
-            session.terminal.textInput('ALIGN_OK');
-            await Future<void>.delayed(const Duration(milliseconds: 400));
 
-            final buf = session.terminal.buffer;
-            final curLine = buf.lines[buf.absoluteCursorY].getText().trimRight();
+            // Wait for error output to finish and a fresh prompt line to appear
+            final afterErrorReady = await waitUntil(() {
+              final buf = session.terminal.buffer;
+              return buf.absoluteCursorY > initialCursorY &&
+                  currentLineText().contains('PS ');
+            });
+            expect(
+              afterErrorReady,
+              isTrue,
+              reason: 'Prompt did not return after error output: "${currentLineText()}"',
+            );
+
+            session.terminal.textInput('ALIGN_OK');
+            await waitUntil(() => currentLineText().contains('ALIGN_OK'));
+
+            final curLine = currentLineText();
             expect(curLine, contains('PS '));
             expect(curLine, contains('ALIGN_OK'));
             controller.closeSessionTab(sid);
