@@ -442,15 +442,15 @@ mod desktop_pty {
                 .unwrap_or("sh")
                 .to_string();
             let (name, args) = match bin.as_str() {
-                "zsh" => ("Zsh", vec!["-l".to_string()]),
-                "bash" => ("Bash", vec!["-l".to_string()]),
-                "fish" => ("Fish", vec!["-l".to_string()]),
-                "sh" => ("POSIX sh", Vec::new()),
-                other => (other, Vec::new()),
+                "zsh" => ("Zsh".to_string(), vec!["-l".to_string()]),
+                "bash" => ("Bash".to_string(), vec!["-l".to_string()]),
+                "fish" => ("Fish".to_string(), vec!["-l".to_string()]),
+                "sh" => ("POSIX sh".to_string(), Vec::new()),
+                other => (other.to_string(), Vec::new()),
             };
             shells.push(LocalShellOption {
                 id: bin,
-                name: name.to_string(),
+                name,
                 program: path_str.to_string(),
                 args,
                 is_default: false,
