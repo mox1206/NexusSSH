@@ -28,6 +28,7 @@ Future<void> main() async {
   runApp(NexusSshApp(controller: controller));
   WidgetsBinding.instance.addPostFrameCallback((_) {
     controller.initDesktopTray();
+    controller.scheduleStartupUpdateCheck();
   });
 }
 

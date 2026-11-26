@@ -111,7 +111,10 @@ jobs:
         run: flutter pub get
 
       - name: Build Windows Release
-        run: flutter build windows --release
+        run: >
+          flutter build windows --release
+          --dart-define=APP_VERSION=${{ needs.prepare.outputs.version }}
+          --dart-define=APP_BUILD_NUMBER=${{ needs.prepare.outputs.build_number }}
 
       - name: Package Windows ZIP
         shell: pwsh
@@ -191,7 +194,10 @@ jobs:
         run: flutter pub get
 
       - name: Build Android Split APKs
-        run: flutter build apk --release --split-per-abi
+        run: >
+          flutter build apk --release --split-per-abi
+          --dart-define=APP_VERSION=${{ needs.prepare.outputs.version }}
+          --dart-define=APP_BUILD_NUMBER=${{ needs.prepare.outputs.build_number }}
 
       - name: Package Android APKs
         run: |
@@ -256,7 +262,10 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux Release
-        run: flutter build linux --release
+        run: >
+          flutter build linux --release
+          --dart-define=APP_VERSION=${{ needs.prepare.outputs.version }}
+          --dart-define=APP_BUILD_NUMBER=${{ needs.prepare.outputs.build_number }}
 
       - name: Package Linux tar.gz
         run: |
@@ -304,7 +313,10 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS Release
-        run: flutter build macos --release
+        run: >
+          flutter build macos --release
+          --dart-define=APP_VERSION=${{ needs.prepare.outputs.version }}
+          --dart-define=APP_BUILD_NUMBER=${{ needs.prepare.outputs.build_number }}
 
       - name: Package macOS ZIP
         run: |

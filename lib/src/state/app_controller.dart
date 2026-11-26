@@ -12,6 +12,8 @@ import 'package:nexus_ssh/src/security/biometric_auth_service.dart';
 import 'package:nexus_ssh/src/terminal/command_autocomplete.dart';
 import 'package:nexus_ssh/src/terminal/sudo_prompt_detector.dart';
 import 'package:nexus_ssh/src/ui/terminal_palettes.dart';
+import 'package:nexus_ssh/src/update/app_update_models.dart';
+import 'package:nexus_ssh/src/update/app_update_service.dart';
 import 'package:xterm3/xterm.dart';
 
 enum SessionDrawerTab { sftp, monitor, snippets }
@@ -113,9 +115,11 @@ class AppController extends ChangeNotifier {
     required this.backend,
     DesktopWindowAdapter? desktopAdapter,
     BiometricAuthService? biometricService,
+    AppUpdateService? updateService,
     this.autoAcceptHostKeys = false,
   }) : _desktopAdapter = desktopAdapter ?? const NoopDesktopWindowAdapter(),
-       _biometricService = biometricService ?? const NoopBiometricAuthService() {
+       _biometricService = biometricService ?? const NoopBiometricAuthService(),
+       _updateService = updateService ?? AppUpdateService() {
     _outputSub = backend.outputStream.listen(_handleOutputChunk);
     _statusSub = backend.statusStream.listen(_handleStatusEvent);
     _showVirtualKeys = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
@@ -124,7 +128,11 @@ class AppController extends ChangeNotifier {
   final SshBackend backend;
   final DesktopWindowAdapter _desktopAdapter;
   final BiometricAuthService _biometricService;
+  final AppUpdateService _updateService;
   final bool autoAcceptHostKeys;
+
+  UpdateState _updateState = const UpdateState();
+  Timer? _startupUpdateTimer;
 
   late final StreamSubscription<SessionOutputChunk> _outputSub;
   late final StreamSubscription<SessionStatusEvent> _statusSub;
@@ -628,6 +636,18 @@ class AppController extends ChangeNotifier {
           _preferredLocalShellId =
               (raw['preferred_local_shell_id'] as String).trim();
         }
+        final savedIgnoredVersion = raw['ignored_update_version'] is String
+            ? (raw['ignored_update_version'] as String).trim()
+            : '';
+        final savedMirrorPrefix = raw['update_mirror_prefix'] is String
+            ? (raw['update_mirror_prefix'] as String).trim()
+            : '';
+        if (savedIgnoredVersion.isNotEmpty || savedMirrorPrefix.isNotEmpty) {
+          _updateState = _updateState.copyWith(
+            ignoredVersion: savedIgnoredVersion,
+            mirrorPrefix: savedMirrorPrefix,
+          );
+        }
       }
     } catch (_) {}
   }
@@ -649,9 +669,228 @@ class AppController extends ChangeNotifier {
           if (_preferredLocalShellId != null &&
               _preferredLocalShellId!.isNotEmpty)
             'preferred_local_shell_id': _preferredLocalShellId,
+          if (_updateState.ignoredVersion.isNotEmpty)
+            'ignored_update_version': _updateState.ignoredVersion,
+          if (_updateState.mirrorPrefix.isNotEmpty)
+            'update_mirror_prefix': _updateState.mirrorPrefix,
         }),
       );
     } catch (_) {}
+  }
+
+  // --- App Auto-Update ---
+
+  UpdateState get updateState => _updateState;
+  bool get hasUnignoredUpdate => _updateState.hasUnignoredUpdate;
+  bool get supportsInAppUpdateInstall => _updateService.supportsInAppInstall;
+
+  void scheduleStartupUpdateCheck({
+    Duration delay = const Duration(seconds: 3),
+  }) {
+    _startupUpdateTimer?.cancel();
+    _startupUpdateTimer = Timer(delay, () {
+      unawaited(checkForUpdates(silent: true));
+    });
+  }
+
+  Future<void> checkForUpdates({bool silent = false}) async {
+    if (_updateState.isBusy) return;
+    final current = await _updateService.getCurrentVersion();
+    if (!silent) {
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.checking,
+        currentVersion: current,
+        clearErrorMessage: true,
+        clearStatusMessage: true,
+      );
+      notifyListeners();
+    } else {
+      _updateState = _updateState.copyWith(currentVersion: current);
+    }
+
+    try {
+      final manifest = await _updateService.fetchLatestManifest(
+        mirrorPrefix: _updateState.mirrorPrefix,
+      );
+      final asset = await _updateService.selectAssetForCurrentPlatform(
+        manifest,
+      );
+      final isNewer = manifest.versionInfo.isNewerThan(current);
+
+      _updateState = _updateState.copyWith(
+        phase: isNewer ? UpdatePhase.available : UpdatePhase.upToDate,
+        currentVersion: current,
+        manifest: manifest,
+        matchedAsset: asset,
+        clearMatchedAsset: asset == null,
+        clearDownloadedFilePath: true,
+        downloadedBytes: 0,
+        totalBytes: asset?.size ?? 0,
+        clearErrorMessage: true,
+        statusMessage: isNewer
+            ? '发现新版本 v${manifest.version}'
+            : '当前已是最新版本 (${current.displayLabel})',
+        lastCheckedAt: DateTime.now(),
+      );
+      notifyListeners();
+    } catch (e) {
+      if (silent) {
+        return;
+      }
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.error,
+        currentVersion: current,
+        errorMessage: _formatUpdateError(e),
+        clearStatusMessage: true,
+        lastCheckedAt: DateTime.now(),
+      );
+      notifyListeners();
+    }
+  }
+
+  Future<void> downloadAvailableUpdate() async {
+    final asset = _updateState.matchedAsset;
+    if (asset == null || _updateState.isBusy) return;
+
+    _updateState = _updateState.copyWith(
+      phase: UpdatePhase.downloading,
+      downloadedBytes: 0,
+      totalBytes: asset.size,
+      clearErrorMessage: true,
+      statusMessage: '正在下载 ${asset.fileName}...',
+    );
+    notifyListeners();
+
+    try {
+      final filePath = await _updateService.downloadAndVerifyAsset(
+        asset,
+        mirrorPrefix: _updateState.mirrorPrefix,
+        onProgress: (received, total) {
+          _updateState = _updateState.copyWith(
+            phase: UpdatePhase.downloading,
+            downloadedBytes: received,
+            totalBytes: total > 0 ? total : asset.size,
+          );
+          notifyListeners();
+        },
+        onVerifying: () {
+          _updateState = _updateState.copyWith(
+            phase: UpdatePhase.verifying,
+            statusMessage: '正在校验 SHA-256 完整性...',
+          );
+          notifyListeners();
+        },
+      );
+
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.readyToInstall,
+        downloadedFilePath: filePath,
+        downloadedBytes: asset.size > 0
+            ? asset.size
+            : _updateState.downloadedBytes,
+        totalBytes: asset.size > 0 ? asset.size : _updateState.totalBytes,
+        clearErrorMessage: true,
+        statusMessage: 'SHA-256 校验通过，已准备就绪',
+      );
+      notifyListeners();
+    } catch (e) {
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.error,
+        errorMessage: _formatUpdateError(e),
+        clearStatusMessage: true,
+      );
+      notifyListeners();
+    }
+  }
+
+  /// Launches platform-specific installation for a downloaded & verified update.
+  /// Returns an optional status message to display to the user.
+  Future<String?> installDownloadedUpdate() async {
+    final filePath = _updateState.downloadedFilePath;
+    if (filePath == null || filePath.isEmpty) {
+      return '请先下载更新包';
+    }
+
+    _updateState = _updateState.copyWith(
+      phase: UpdatePhase.installing,
+      clearErrorMessage: true,
+      statusMessage: '正在启动更新安装...',
+    );
+    notifyListeners();
+
+    try {
+      if (!kIsWeb && Platform.isWindows) {
+        await _updateService.launchWindowsSelfUpdate(
+          zipFilePath: filePath,
+          onRequestExit: exitApplication,
+        );
+        return '正在退出并自动应用更新...';
+      }
+      if (!kIsWeb && Platform.isAndroid) {
+        final outcome = await _updateService.launchAndroidApkInstall(filePath);
+        _updateState = _updateState.copyWith(
+          phase: UpdatePhase.readyToInstall,
+          statusMessage: outcome == 'permission_required'
+              ? '请允许「安装未知应用」权限后再次点击安装'
+              : '已拉起系统安装器',
+        );
+        notifyListeners();
+        return _updateState.statusMessage;
+      }
+      await openUpdateReleasePage();
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.readyToInstall,
+        statusMessage: '已打开 GitHub Release 页面',
+      );
+      notifyListeners();
+      return _updateState.statusMessage;
+    } catch (e) {
+      _updateState = _updateState.copyWith(
+        phase: UpdatePhase.error,
+        errorMessage: _formatUpdateError(e),
+        clearStatusMessage: true,
+      );
+      notifyListeners();
+      return _updateState.errorMessage;
+    }
+  }
+
+  void ignoreAvailableUpdate() {
+    final version = _updateState.manifest?.version ?? '';
+    if (version.isEmpty) return;
+    _updateState = _updateState.copyWith(ignoredVersion: version);
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void setUpdateMirrorPrefix(String prefix) {
+    final cleaned = prefix.trim();
+    _updateState = _updateState.copyWith(mirrorPrefix: cleaned);
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  Future<bool> openUpdateReleasePage() {
+    final url =
+        _updateState.manifest?.releaseUrl ??
+        AppUpdateConfig.defaultReleasesPageUrl;
+    return openExternalUrl(url);
+  }
+
+  String _formatUpdateError(Object e) {
+    final raw = e.toString();
+    if (raw.startsWith('Bad state: ')) {
+      return raw.substring('Bad state: '.length);
+    }
+    if (raw.startsWith('HttpException: ')) {
+      return raw.substring('HttpException: '.length).split(',').first.trim();
+    }
+    if (raw.contains('SocketException') ||
+        raw.contains('TimeoutException') ||
+        raw.contains('HandshakeException')) {
+      return '无法连接到 GitHub 更新源，可在下方配置加速镜像后重试';
+    }
+    return raw;
   }
 
   Future<void> refreshHosts() async {
@@ -1883,6 +2122,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _startupUpdateTimer?.cancel();
     _clipboardClearTimer?.cancel();
     _desktopAdapter.dispose();
     _outputSub.cancel();

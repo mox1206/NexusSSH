@@ -7,6 +7,7 @@ import 'package:nexus_ssh/src/state/app_controller.dart';
 import 'package:nexus_ssh/src/ui/app_lock_overlay.dart';
 import 'package:nexus_ssh/src/ui/app_lock_settings_dialog.dart';
 import 'package:nexus_ssh/src/ui/app_theme.dart';
+import 'package:nexus_ssh/src/ui/app_update_dialog.dart';
 import 'package:nexus_ssh/src/ui/desktop_close_dialog.dart';
 import 'package:nexus_ssh/src/ui/host_editor_dialog.dart';
 import 'package:nexus_ssh/src/ui/host_key_dialog.dart';
@@ -1049,6 +1050,19 @@ class _CollapsedSidebarContent extends StatelessWidget {
                   ),
                 ),
               ],
+              const SizedBox(height: 2),
+              _RailIconButton(
+                tooltip: controller.hasUnignoredUpdate
+                    ? '发现新版本 v${controller.updateState.manifest?.version ?? ''}'
+                    : '检查更新 (${controller.updateState.currentVersion.displayLabel})',
+                height: 32,
+                customChild: _UpdateIconWithBadge(
+                  hasUpdate: controller.hasUnignoredUpdate,
+                  size: 16,
+                ),
+                onTap: () =>
+                    AppUpdateDialog.show(context, controller: controller),
+              ),
             ],
           ),
         ),
@@ -1347,6 +1361,17 @@ class _SidebarFooterDock extends StatelessWidget {
             color: NexusColors.textSecondary,
           ),
         ),
+      _DockIconButton(
+        tooltip: controller.hasUnignoredUpdate
+            ? '发现新版本 v${controller.updateState.manifest?.version ?? ''}'
+            : '检查更新 (${controller.updateState.currentVersion.displayLabel})',
+        activeAccent: controller.hasUnignoredUpdate,
+        onTap: () => AppUpdateDialog.show(context, controller: controller),
+        child: _UpdateIconWithBadge(
+          hasUpdate: controller.hasUnignoredUpdate,
+          size: 16.5,
+        ),
+      ),
     ];
 
     return Padding(
@@ -1359,6 +1384,41 @@ class _SidebarFooterDock extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _UpdateIconWithBadge extends StatelessWidget {
+  const _UpdateIconWithBadge({required this.hasUpdate, required this.size});
+
+  final bool hasUpdate;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(
+          Icons.system_update_alt_rounded,
+          size: size,
+          color: hasUpdate ? NexusColors.emerald : NexusColors.textSecondary,
+        ),
+        if (hasUpdate)
+          Positioned(
+            right: -3,
+            top: -3,
+            child: Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                color: NexusColors.emerald,
+                shape: BoxShape.circle,
+                border: Border.all(color: NexusColors.bgSidebar, width: 1.2),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
