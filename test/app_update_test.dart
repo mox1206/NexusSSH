@@ -118,7 +118,12 @@ void main() {
     expect(script, contains(r'$targetPid = 4321'));
     expect(script, contains(r"'C:\Temp\it''s\nexus.zip'"));
     expect(script, contains('Expand-Archive'));
+    expect(script, contains('robocopy.exe'));
     expect(script, contains('Start-Process'));
+    expect(
+      AppUpdateService.buildWindowsVbsLauncher(),
+      contains('WScript.Shell'),
+    );
   });
 
   test(

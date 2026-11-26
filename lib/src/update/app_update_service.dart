@@ -282,8 +282,8 @@ class AppUpdateService {
   }
 
   /// Launches the Windows detached updater script that waits for the current
-  /// `nexus_ssh.exe` PID to exit, extracts the verified ZIP into the app folder,
-  /// and relaunches the new binary.
+  /// `nexus_ssh.exe` PID to exit, extracts the verified ZIP into the app folder
+  /// via `robocopy`, and relaunches the new binary.
   Future<void> launchWindowsSelfUpdate({
     required String zipFilePath,
     required VoidCallback onRequestExit,
@@ -305,38 +305,66 @@ class AppUpdateService {
 
     final scriptDir = zipFile.parent;
     final scriptFile = File(p.join(scriptDir.path, 'apply_nexus_update.ps1'));
+    final vbsFile = File(p.join(scriptDir.path, 'launch_nexus_update.vbs'));
+    final logFile = File(p.join(scriptDir.path, 'update.log'));
     final stagingDir = p.join(
       scriptDir.path,
       'staging_${DateTime.now().millisecondsSinceEpoch}',
     );
 
-    await scriptFile.writeAsString(
-      buildWindowsUpdaterScript(
-        targetPid: pid,
-        zipPath: zipFile.path,
-        stagingDir: stagingDir,
-        installDir: installDir,
-        exePath: exePath,
-      ),
-      encoding: utf8,
+    // Write UTF-8 with BOM so Windows PowerShell 5.1 parses Unicode paths accurately
+    final scriptContent = buildWindowsUpdaterScript(
+      targetPid: pid,
+      zipPath: zipFile.path,
+      stagingDir: stagingDir,
+      installDir: installDir,
+      exePath: exePath,
+      logPath: logFile.path,
+      vbsPath: vbsFile.path,
+    );
+    await scriptFile.writeAsBytes(
+      <int>[0xEF, 0xBB, 0xBF, ...utf8.encode(scriptContent)],
+      flush: true,
     );
 
-    await Process.start(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-WindowStyle',
-        'Hidden',
-        '-File',
-        scriptFile.path,
-      ],
-      mode: ProcessStartMode.detached,
-    );
+    // Use wscript.exe (GUI subsystem) so detached launch from Flutter GUI never
+    // fails under DETACHED_PROCESS stdio rules and flashes zero console windows.
+    await vbsFile.writeAsString(buildWindowsVbsLauncher(), encoding: ascii);
+
+    try {
+      await Process.start(
+        'wscript.exe',
+        ['//B', '//Nologo', vbsFile.path, scriptFile.path],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (_) {
+      // Fallback when Windows Script Host is disabled by enterprise policy
+      await Process.start(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-WindowStyle',
+          'Hidden',
+          '-File',
+          scriptFile.path,
+        ],
+        mode: ProcessStartMode.detached,
+        runInShell: true,
+      );
+    }
 
     onRequestExit();
+  }
+
+  /// Generates the hidden VBScript shim that spawns PowerShell cleanly without a console flash.
+  @visibleForTesting
+  static String buildWindowsVbsLauncher() {
+    return 'Set sh = CreateObject("WScript.Shell")\r\n'
+        'ps1 = WScript.Arguments(0)\r\n'
+        'sh.Run "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1 & """", 0, False\r\n';
   }
 
   /// Generates the PowerShell self-update script for Windows portable releases.
@@ -347,8 +375,13 @@ class AppUpdateService {
     required String stagingDir,
     required String installDir,
     required String exePath,
+    String logPath = '',
+    String vbsPath = '',
   }) {
     String psQuote(String value) => "'${value.replaceAll("'", "''")}'";
+    final resolvedLog = logPath.isNotEmpty
+        ? logPath
+        : p.join(p.dirname(zipPath), 'update.log');
     return '''
 \$ErrorActionPreference = 'Stop'
 \$targetPid = $targetPid
@@ -356,6 +389,16 @@ class AppUpdateService {
 \$stagingDir = ${psQuote(stagingDir)}
 \$installDir = ${psQuote(installDir)}
 \$exePath = ${psQuote(exePath)}
+\$logPath = ${psQuote(resolvedLog)}
+\$vbsPath = ${psQuote(vbsPath)}
+
+function Write-Log([string]\$msg) {
+  try {
+    "[\$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] \$msg" | Out-File -FilePath \$logPath -Append -Encoding UTF8
+  } catch {}
+}
+
+Write-Log "Updater started (targetPid=\$targetPid, installDir=\$installDir)"
 
 # Wait up to 30 seconds for Nexus SSH to exit cleanly
 for (\$i = 0; \$i -lt 120; \$i++) {
@@ -364,33 +407,37 @@ for (\$i = 0; \$i -lt 120; \$i++) {
   }
   Start-Sleep -Milliseconds 250
 }
+Start-Sleep -Milliseconds 350
 
 try {
   if (Test-Path \$stagingDir) {
     Remove-Item -Recurse -Force \$stagingDir
   }
   New-Item -ItemType Directory -Force -Path \$stagingDir | Out-Null
+  Write-Log "Extracting \$zipPath"
   Expand-Archive -Path \$zipPath -DestinationPath \$stagingDir -Force
 
-  # Retry copy briefly in case Windows AV / Defender holds a DLL handle
-  \$copied = \$false
-  for (\$attempt = 0; \$attempt -lt 10; \$attempt++) {
-    try {
-      Copy-Item -Path (Join-Path \$stagingDir '*') -Destination \$installDir -Recurse -Force
-      \$copied = \$true
-      break
-    } catch {
-      Start-Sleep -Milliseconds 400
-    }
-  }
-  if (-not \$copied) {
-    throw 'Failed to copy updated files into install directory.'
+  # Use robocopy /E (never /MIR) so nested folders merge cleanly while preserving extra user files
+  Write-Log "Syncing files to \$installDir via robocopy"
+  & robocopy.exe \$stagingDir \$installDir /E /IS /IT /R:10 /W:1 /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+  \$rc = \$LASTEXITCODE
+  Write-Log "robocopy exit code=\$rc"
+  if (\$rc -ge 8) {
+    throw "robocopy failed with exit code \$rc"
   }
 
+  Write-Log "Launching updated \$exePath"
   Start-Process -FilePath \$exePath -WorkingDirectory \$installDir
+  Write-Log "Update completed successfully"
+} catch {
+  Write-Log "ERROR: \$_"
+  throw
 } finally {
   Remove-Item -Recurse -Force \$stagingDir -ErrorAction SilentlyContinue
   Remove-Item -Force \$zipPath -ErrorAction SilentlyContinue
+  if (\$vbsPath) {
+    Remove-Item -Force \$vbsPath -ErrorAction SilentlyContinue
+  }
 }
 ''';
   }
