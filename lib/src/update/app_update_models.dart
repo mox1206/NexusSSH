@@ -13,11 +13,11 @@ class AppUpdateConfig {
   /// defaulting to the version declared in `pubspec.yaml`.
   static const String fallbackVersion = String.fromEnvironment(
     'APP_VERSION',
-    defaultValue: '1.0.0',
+    defaultValue: '1.0.1',
   );
   static const int fallbackBuildNumber = int.fromEnvironment(
     'APP_BUILD_NUMBER',
-    defaultValue: 1,
+    defaultValue: 2,
   );
 }
 
