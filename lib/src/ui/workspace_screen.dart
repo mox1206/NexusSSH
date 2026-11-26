@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:nexus_ssh/src/desktop/desktop_shortcuts.dart';
 import 'package:nexus_ssh/src/models/ssh_models.dart';
 import 'package:nexus_ssh/src/state/app_controller.dart';
 import 'package:nexus_ssh/src/ui/app_lock_overlay.dart';
@@ -41,6 +43,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
   Size? _lastMetricsSize;
   bool _suppressResizePointers = false;
   Timer? _resizePointerTimer;
+  KeyEvent? _lastHandledShortcutEvent;
 
   Size? _currentPhysicalWindowSize() {
     final views = WidgetsBinding.instance.platformDispatcher.views;
@@ -52,14 +55,92 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
     _lastMetricsSize = _currentPhysicalWindowSize();
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
     _resizePointerTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  bool _handleGlobalKeyEvent(KeyEvent event) {
+    if (!mounted || event is! KeyDownEvent) return false;
+    if (identical(event, _lastHandledShortcutEvent)) return true;
+    if (!controller.initialized ||
+        controller.isAppLocked ||
+        controller.closePromptPending ||
+        controller.shortcutRecordingActive) {
+      return false;
+    }
+    // Pause workspace shortcuts while any modal dialog / bottom sheet is open
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      return false;
+    }
+
+    final hw = HardwareKeyboard.instance;
+    final config = controller.shortcutConfig;
+
+    final tabIndex = config.matchQuickTabSwitch(event, hw);
+    if (tabIndex != null && tabIndex < controller.sessions.length) {
+      _lastHandledShortcutEvent = event;
+      controller.selectSessionByIndex(tabIndex);
+      return true;
+    }
+
+    final action = config.matchAction(event, hw);
+    if (action == null) return false;
+
+    bool handled = false;
+    switch (action) {
+      case ShortcutAction.newLocalTerminal:
+        if (controller.isLocalTerminalSupported) {
+          unawaited(controller.openLocalSession());
+          handled = true;
+        }
+      case ShortcutAction.closeTab:
+        final active = controller.activeSession;
+        if (active != null) {
+          controller.closeSessionTab(active.id);
+          handled = true;
+        }
+      case ShortcutAction.nextTab:
+        if (controller.sessions.isNotEmpty) {
+          controller.selectNextSession();
+          handled = true;
+        }
+      case ShortcutAction.previousTab:
+        if (controller.sessions.isNotEmpty) {
+          controller.selectPreviousSession();
+          handled = true;
+        }
+      case ShortcutAction.focusSearch:
+        controller.requestSearchFocus();
+        handled = true;
+      case ShortcutAction.toggleSidebar:
+        controller.toggleSidebarCollapsed();
+        handled = true;
+      case ShortcutAction.zoomIn:
+        controller.adjustFontSize(1);
+        handled = true;
+      case ShortcutAction.zoomOut:
+        controller.adjustFontSize(-1);
+        handled = true;
+      case ShortcutAction.zoomReset:
+        controller.resetFontSize();
+        handled = true;
+      case ShortcutAction.openSettings:
+        unawaited(SettingsDialog.show(context, controller: controller));
+        handled = true;
+    }
+    if (handled) {
+      _lastHandledShortcutEvent = event;
+    }
+    return handled;
   }
 
   @override
@@ -288,6 +369,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                               key: ValueKey('session_${activeSession.id}'),
                               controller: controller,
                               session: activeSession,
+                              onShortcutKeyEvent: _handleGlobalKeyEvent,
                             ),
                     ),
                   ],

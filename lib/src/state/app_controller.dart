@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:nexus_ssh/src/desktop/desktop_shortcuts.dart';
 import 'package:nexus_ssh/src/desktop/desktop_tray_service.dart';
 import 'package:nexus_ssh/src/models/ssh_models.dart';
 import 'package:nexus_ssh/src/rust/ssh_bridge.dart';
@@ -133,6 +134,9 @@ class AppController extends ChangeNotifier {
 
   UpdateState _updateState = const UpdateState();
   Timer? _startupUpdateTimer;
+  DesktopShortcutConfig _shortcutConfig = DesktopShortcutConfig.defaults();
+  int _searchFocusRevision = 0;
+  bool _shortcutRecordingActive = false;
 
   late final StreamSubscription<SessionOutputChunk> _outputSub;
   late final StreamSubscription<SessionStatusEvent> _statusSub;
@@ -648,6 +652,9 @@ class AppController extends ChangeNotifier {
             mirrorPrefix: savedMirrorPrefix,
           );
         }
+        if (raw['shortcuts'] is Map) {
+          _shortcutConfig = DesktopShortcutConfig.fromJson(raw['shortcuts']);
+        }
       }
     } catch (_) {}
   }
@@ -673,9 +680,103 @@ class AppController extends ChangeNotifier {
             'ignored_update_version': _updateState.ignoredVersion,
           if (_updateState.mirrorPrefix.isNotEmpty)
             'update_mirror_prefix': _updateState.mirrorPrefix,
+          'shortcuts': _shortcutConfig.toJson(),
         }),
       );
     } catch (_) {}
+  }
+
+  // --- Desktop Keyboard Shortcuts ---
+
+  DesktopShortcutConfig get shortcutConfig => _shortcutConfig;
+  int get searchFocusRevision => _searchFocusRevision;
+  bool get shortcutRecordingActive => _shortcutRecordingActive;
+
+  void setShortcutRecordingActive(bool active) {
+    if (_shortcutRecordingActive == active) return;
+    _shortcutRecordingActive = active;
+  }
+
+  void setShortcutPreset(ShortcutPreset preset) {
+    final base = DesktopShortcutConfig.defaults(preset: preset);
+    _shortcutConfig = base.copyWith(
+      smartCtrlCCopy: _shortcutConfig.smartCtrlCCopy,
+      rightClickQuickPaste: _shortcutConfig.rightClickQuickPaste,
+    );
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void setShortcutBinding(
+    ShortcutAction action,
+    ShortcutBinding? binding, {
+    bool clearConflicting = true,
+  }) {
+    final updated = Map<ShortcutAction, ShortcutBinding?>.from(
+      _shortcutConfig.bindings,
+    );
+    if (binding != null && clearConflicting) {
+      for (final entry in _shortcutConfig.bindings.entries) {
+        if (entry.key != action && entry.value == binding) {
+          updated[entry.key] = null;
+        }
+      }
+    }
+    updated[action] = binding;
+    _shortcutConfig = _shortcutConfig.copyWith(
+      bindings: Map.unmodifiable(updated),
+    );
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void resetShortcuts() {
+    _shortcutConfig = DesktopShortcutConfig.defaults(
+      preset: _shortcutConfig.preset,
+    );
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void setSmartCtrlCCopy(bool enabled) {
+    if (_shortcutConfig.smartCtrlCCopy == enabled) return;
+    _shortcutConfig = _shortcutConfig.copyWith(smartCtrlCCopy: enabled);
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void setRightClickQuickPaste(bool enabled) {
+    if (_shortcutConfig.rightClickQuickPaste == enabled) return;
+    _shortcutConfig = _shortcutConfig.copyWith(rightClickQuickPaste: enabled);
+    _saveDesktopPrefs();
+    notifyListeners();
+  }
+
+  void requestSearchFocus() {
+    _activeSessionId = null;
+    _searchFocusRevision++;
+    notifyListeners();
+  }
+
+  void selectNextSession() {
+    if (_sessions.isEmpty) return;
+    final idx = _sessions.indexWhere((s) => s.id == _activeSessionId);
+    final nextIdx = idx < 0 ? 0 : (idx + 1) % _sessions.length;
+    selectSession(_sessions[nextIdx].id);
+  }
+
+  void selectPreviousSession() {
+    if (_sessions.isEmpty) return;
+    final idx = _sessions.indexWhere((s) => s.id == _activeSessionId);
+    final prevIdx = idx < 0
+        ? _sessions.length - 1
+        : (idx - 1 + _sessions.length) % _sessions.length;
+    selectSession(_sessions[prevIdx].id);
+  }
+
+  void selectSessionByIndex(int index) {
+    if (index < 0 || index >= _sessions.length) return;
+    selectSession(_sessions[index].id);
   }
 
   // --- App Auto-Update ---
@@ -997,6 +1098,12 @@ class AppController extends ChangeNotifier {
 
   void adjustFontSize(double delta) {
     _fontSize = (_fontSize + delta).clamp(10.0, 26.0);
+    notifyListeners();
+  }
+
+  void resetFontSize() {
+    if (_fontSize == 14.0) return;
+    _fontSize = 14.0;
     notifyListeners();
   }
 

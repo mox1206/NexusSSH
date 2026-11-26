@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:nexus_ssh/src/desktop/desktop_shortcuts.dart';
 import 'package:nexus_ssh/src/desktop/desktop_tray_service.dart';
 import 'package:nexus_ssh/src/models/ssh_models.dart';
 import 'package:nexus_ssh/src/state/app_controller.dart';
@@ -68,6 +70,9 @@ class SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<SettingsDialog> {
   late SettingsSection _section;
+  ShortcutAction? _recordingAction;
+  String? _shortcutHint;
+  bool _shortcutHintIsWarning = false;
 
   List<SettingsSection> get _availableSections {
     final isDesktop = widget.controller.isDesktopTraySupported;
@@ -93,10 +98,94 @@ class _SettingsDialogState extends State<SettingsDialog> {
         widget.controller.updateState.phase == UpdatePhase.idle) {
       widget.controller.checkForUpdates();
     }
+    HardwareKeyboard.instance.addHandler(_handleRecorderKeyEvent);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleRecorderKeyEvent);
+    widget.controller.setShortcutRecordingActive(false);
+    super.dispose();
+  }
+
+  void _startRecording(ShortcutAction action) {
+    setState(() {
+      _recordingAction = action;
+      _shortcutHint = '请按下新的快捷键组合（Esc 取消，Backspace 清除绑定）';
+      _shortcutHintIsWarning = false;
+    });
+    widget.controller.setShortcutRecordingActive(true);
+  }
+
+  void _stopRecording({String? hint, bool isWarning = false}) {
+    widget.controller.setShortcutRecordingActive(false);
+    setState(() {
+      _recordingAction = null;
+      _shortcutHint = hint;
+      _shortcutHintIsWarning = isWarning;
+    });
+  }
+
+  bool _handleRecorderKeyEvent(KeyEvent event) {
+    final target = _recordingAction;
+    if (target == null || !mounted) return false;
+    if (event is! KeyDownEvent) return true;
+
+    final key = event.logicalKey;
+    final hw = HardwareKeyboard.instance;
+
+    if (key == LogicalKeyboardKey.escape) {
+      _stopRecording();
+      return true;
+    }
+    if ((key == LogicalKeyboardKey.backspace ||
+            key == LogicalKeyboardKey.delete) &&
+        !hw.isControlPressed &&
+        !hw.isAltPressed &&
+        !hw.isMetaPressed &&
+        !hw.isShiftPressed) {
+      widget.controller.setShortcutBinding(target, null);
+      _stopRecording(hint: '已清除「${target.title}」的快捷键绑定');
+      return true;
+    }
+
+    final captured = ShortcutBinding.fromKeyEvent(event, hw);
+    if (captured == null) {
+      // Ignore bare modifier presses until a full key combo is pressed
+      return true;
+    }
+
+    final conflict = widget.controller.shortcutConfig.findConflict(
+      captured,
+      excluding: target,
+    );
+    widget.controller.setShortcutBinding(
+      target,
+      captured,
+      clearConflicting: true,
+    );
+
+    if (conflict != null) {
+      _stopRecording(
+        hint: '已绑定为 ${captured.displayLabel}，并自动解除了原「${conflict.title}」的冲突绑定',
+        isWarning: true,
+      );
+    } else if (captured.overlapsUnixTerminalControlKey) {
+      _stopRecording(
+        hint: '已绑定为 ${captured.displayLabel}（提示：单 Ctrl+字母在部分 Linux Shell/Vim 中有原生用途）',
+        isWarning: true,
+      );
+    } else {
+      _stopRecording(hint: '已将「${target.title}」更新为 ${captured.displayLabel}');
+    }
+    return true;
   }
 
   void _selectSection(SettingsSection next) {
     if (_section == next) return;
+    if (_recordingAction != null) {
+      _stopRecording();
+    }
     setState(() => _section = next);
     if (next == SettingsSection.updates &&
         widget.controller.updateState.phase == UpdatePhase.idle) {
@@ -568,54 +657,178 @@ class _SettingsDialogState extends State<SettingsDialog> {
   }
 
   Widget _buildShortcutsSection() {
-    const builtInBindings = <(String, String, String)>[
-      ('终端原生补全', '透传给远端或本地 Shell 执行原生补全', 'Tab'),
-      ('一键采纳行尾联想', '在命令提示浮窗显示时快速补全当前建议', '→'),
-      ('切换并确认命令提示', '在联想候选中上下移动并回车确认', '↑ / ↓ + Enter'),
-      ('终端复制 / 粘贴', '在活动终端会话内复制选区或粘贴文本', 'Ctrl + Shift + C / V'),
-      ('展开 / 收起侧边栏', '在工作区左侧切换完整导航与极简图标栏', '侧栏顶部按钮'),
-    ];
+    final cfg = widget.controller.shortcutConfig;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _sectionHeading(
-          '桌面快捷键',
-          '查看当前内置终端与工作区快捷键，自定义按键映射将在后续版本接入',
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _sectionHeading(
+                '桌面快捷键',
+                '默认采用零学习成本的 Windows 常规习惯，点击任意键位胶囊即可自定义录制',
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton.icon(
+              onPressed: () {
+                _stopRecording();
+                widget.controller.resetShortcuts();
+                setState(() {
+                  _shortcutHint = '已恢复当前预设的默认快捷键';
+                  _shortcutHintIsWarning = false;
+                });
+              },
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: NexusColors.textSecondary,
+              ),
+              icon: const Icon(Icons.restart_alt_rounded, size: 15.5),
+              label: const Text('恢复默认', style: TextStyle(fontSize: 12)),
+            ),
+          ],
         ),
         const SizedBox(height: 12),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: NexusColors.cyan.withValues(alpha: 0.09),
-            borderRadius: BorderRadius.circular(11),
-            border: Border.all(
-              color: NexusColors.cyan.withValues(alpha: 0.28),
-            ),
-          ),
-          child: const Row(
-            children: [
-              Icon(
-                Icons.auto_awesome_outlined,
-                size: 16.5,
-                color: NexusColors.cyan,
-              ),
-              SizedBox(width: 9),
+
+        // 1. One-click Preset Switcher
+        Row(
+          children: [
+            for (var i = 0; i < ShortcutPreset.values.length; i++) ...[
+              if (i > 0) const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  'Windows 自定义快捷键配置（新建标签、切标签、唤起主窗口等）已预留扩展位，即将支持。',
+                child: _presetOptionCard(
+                  preset: ShortcutPreset.values[i],
+                  selected: cfg.preset == ShortcutPreset.values[i],
+                  onTap: () {
+                    _stopRecording();
+                    widget.controller.setShortcutPreset(
+                      ShortcutPreset.values[i],
+                    );
+                    setState(() {
+                      _shortcutHint =
+                          '已切换为「${ShortcutPreset.values[i].label}」预设';
+                      _shortcutHintIsWarning = false;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // 2. Terminal Ergonomic Toggles (enabled by default)
+        Material(
+          color: NexusColors.bgSurface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: NexusColors.borderSubtle),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              SwitchListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 2,
+                ),
+                title: const Text(
+                  '智能 Ctrl + C 复制',
                   style: TextStyle(
-                    fontSize: 12.2,
-                    height: 1.45,
-                    color: NexusColors.textSecondary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: NexusColors.textPrimary,
                   ),
                 ),
+                subtitle: const Text(
+                  '选中文本时按 Ctrl+C 复制，无选区时照常发送 ^C 中断命令',
+                  style: TextStyle(fontSize: 11.3, color: NexusColors.textMuted),
+                ),
+                value: cfg.smartCtrlCCopy,
+                onChanged: widget.controller.setSmartCtrlCCopy,
+              ),
+              const Divider(
+                height: 1,
+                thickness: 0.7,
+                color: NexusColors.borderSubtle,
+              ),
+              SwitchListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 13,
+                  vertical: 2,
+                ),
+                title: const Text(
+                  '终端内鼠标右键快速粘贴',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: NexusColors.textPrimary,
+                  ),
+                ),
+                subtitle: const Text(
+                  '有选区时右键复制，无选区时右键直接粘贴剪贴板内容',
+                  style: TextStyle(fontSize: 11.3, color: NexusColors.textMuted),
+                ),
+                value: cfg.rightClickQuickPaste,
+                onChanged: widget.controller.setRightClickQuickPaste,
               ),
             ],
           ),
         ),
-        const SizedBox(height: 14),
+
+        if (_shortcutHint != null && _shortcutHint!.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+            decoration: BoxDecoration(
+              color: (_shortcutHintIsWarning
+                      ? NexusColors.amber
+                      : NexusColors.emerald)
+                  .withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(
+                color: (_shortcutHintIsWarning
+                        ? NexusColors.amber
+                        : NexusColors.emerald)
+                    .withValues(alpha: 0.32),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _recordingAction != null
+                      ? Icons.radio_button_checked_rounded
+                      : (_shortcutHintIsWarning
+                            ? Icons.info_outline_rounded
+                            : Icons.check_circle_outline_rounded),
+                  size: 15,
+                  color: _shortcutHintIsWarning
+                      ? NexusColors.amber
+                      : NexusColors.emerald,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _shortcutHint!,
+                    style: const TextStyle(
+                      fontSize: 11.8,
+                      color: NexusColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        const SizedBox(height: 12),
+
+        // 3. Customizable Core Bindings
         Container(
           decoration: BoxDecoration(
             color: NexusColors.bgSurface,
@@ -624,69 +837,220 @@ class _SettingsDialogState extends State<SettingsDialog> {
           ),
           child: Column(
             children: [
-              for (var i = 0; i < builtInBindings.length; i++) ...[
+              for (var i = 0; i < ShortcutAction.values.length; i++) ...[
                 if (i > 0)
                   const Divider(
                     height: 1,
                     thickness: 0.7,
                     color: NexusColors.borderSubtle,
                   ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 13,
-                    vertical: 11,
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              builtInBindings[i].$1,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: NexusColors.textPrimary,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              builtInBindings[i].$2,
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                color: NexusColors.textMuted,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: NexusColors.bgCanvas,
-                          borderRadius: BorderRadius.circular(7),
-                          border: Border.all(color: NexusColors.borderActive),
-                        ),
-                        child: Text(
-                          builtInBindings[i].$3,
-                          style: TextStyle(
-                            fontFamily: NexusTheme.monospaceFontFamily,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: NexusColors.textSecondary,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                _buildShortcutBindingRow(
+                  ShortcutAction.values[i],
+                  cfg.bindingFor(ShortcutAction.values[i]),
                 ),
               ],
             ],
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // 4. Built-in Terminal & Quick Tab Hints
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: NexusColors.bgSurface.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(color: NexusColors.borderSubtle),
+          ),
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 6,
+            children: [
+              _miniShortcutTag('直达标签页', cfg.quickTabSwitchLabel()),
+              _miniShortcutTag('终端复制 / 粘贴', 'Ctrl + Shift + C / V'),
+              _miniShortcutTag('Shell 原生补全', 'Tab'),
+              _miniShortcutTag('采纳行尾联想', '→'),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _presetOptionCard({
+    required ShortcutPreset preset,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: selected
+          ? NexusColors.emerald.withValues(alpha: 0.12)
+          : NexusColors.bgSurface,
+      borderRadius: BorderRadius.circular(11),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(11),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(11),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(
+              color: selected
+                  ? NexusColors.emerald.withValues(alpha: 0.5)
+                  : NexusColors.borderSubtle,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      preset.label,
+                      style: TextStyle(
+                        fontSize: 12.8,
+                        fontWeight: FontWeight.w700,
+                        color: selected
+                            ? NexusColors.emerald
+                            : NexusColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  if (selected)
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      size: 15.5,
+                      color: NexusColors.emerald,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                preset.description,
+                style: const TextStyle(
+                  fontSize: 11,
+                  height: 1.35,
+                  color: NexusColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildShortcutBindingRow(
+    ShortcutAction action,
+    ShortcutBinding? binding,
+  ) {
+    final recording = _recordingAction == action;
+    final label = recording
+        ? '请按键...'
+        : (binding?.displayLabel ?? '未设置');
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  action.title,
+                  style: const TextStyle(
+                    fontSize: 12.8,
+                    fontWeight: FontWeight.w600,
+                    color: NexusColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 1.5),
+                Text(
+                  action.subtitle,
+                  style: const TextStyle(
+                    fontSize: 11.2,
+                    color: NexusColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Tooltip(
+            message: recording ? '按下组合键绑定，Esc 取消' : '点击录制新快捷键',
+            child: Material(
+              color: recording
+                  ? NexusColors.emerald.withValues(alpha: 0.16)
+                  : NexusColors.bgCanvas,
+              borderRadius: BorderRadius.circular(8),
+              child: InkWell(
+                key: ValueKey('shortcut_keycap_${action.id}'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: () =>
+                    recording ? _stopRecording() : _startRecording(action),
+                child: Container(
+                  constraints: const BoxConstraints(minWidth: 76),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: recording
+                          ? NexusColors.emerald
+                          : NexusColors.borderActive,
+                    ),
+                  ),
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontFamily: NexusTheme.monospaceFontFamily,
+                      fontSize: 11.2,
+                      fontWeight: FontWeight.w600,
+                      color: recording
+                          ? NexusColors.emerald
+                          : (binding == null
+                                ? NexusColors.textMuted
+                                : NexusColors.textPrimary),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniShortcutTag(String name, String keys) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$name ',
+          style: const TextStyle(fontSize: 11, color: NexusColors.textMuted),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          decoration: BoxDecoration(
+            color: NexusColors.bgCanvas,
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: NexusColors.borderSubtle),
+          ),
+          child: Text(
+            keys,
+            style: TextStyle(
+              fontFamily: NexusTheme.monospaceFontFamily,
+              fontSize: 10.5,
+              color: NexusColors.textSecondary,
+            ),
           ),
         ),
       ],

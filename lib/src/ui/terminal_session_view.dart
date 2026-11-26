@@ -21,12 +21,14 @@ class TerminalSessionView extends StatefulWidget {
     required this.session,
     this.isMobile = false,
     this.onShowSessionSwitcher,
+    this.onShortcutKeyEvent,
   });
 
   final AppController controller;
   final TerminalSessionItem session;
   final bool isMobile;
   final VoidCallback? onShowSessionSwitcher;
+  final bool Function(KeyEvent event)? onShortcutKeyEvent;
 
   @override
   State<TerminalSessionView> createState() => _TerminalSessionViewState();
@@ -448,6 +450,61 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
 
   KeyEventResult _handleTerminalKeyEvent(FocusNode node, KeyEvent event) {
     final session = widget.session;
+    final hw = HardwareKeyboard.instance;
+    final key = event.logicalKey;
+
+    // 0. Run workspace shortcuts before xterm3 so Ctrl+W / Ctrl+T / Ctrl+B never leak control bytes to the shell
+    if (widget.onShortcutKeyEvent?.call(event) == true) {
+      return KeyEventResult.handled;
+    }
+
+    // 1. Terminal clipboard shortcuts (Smart Ctrl+C, Ctrl+Shift+C/V, macOS Cmd+C/V)
+    if (event is KeyDownEvent) {
+      final isMac = !kIsWeb && Platform.isMacOS;
+      final isSmartCtrlC =
+          !isMac &&
+          hw.isControlPressed &&
+          !hw.isShiftPressed &&
+          !hw.isAltPressed &&
+          !hw.isMetaPressed &&
+          key == LogicalKeyboardKey.keyC &&
+          widget.controller.shortcutConfig.smartCtrlCCopy &&
+          session.controller.selection != null;
+      final isExplicitCopy =
+          key == LogicalKeyboardKey.keyC &&
+          ((!isMac &&
+                  hw.isControlPressed &&
+                  hw.isShiftPressed &&
+                  !hw.isAltPressed &&
+                  !hw.isMetaPressed) ||
+              (isMac &&
+                  hw.isMetaPressed &&
+                  !hw.isControlPressed &&
+                  !hw.isAltPressed &&
+                  !hw.isShiftPressed));
+      if (isSmartCtrlC || isExplicitCopy) {
+        unawaited(_copySelectionOrNotify());
+        return KeyEventResult.handled;
+      }
+
+      final isExplicitPaste =
+          key == LogicalKeyboardKey.keyV &&
+          ((!isMac &&
+                  hw.isControlPressed &&
+                  hw.isShiftPressed &&
+                  !hw.isAltPressed &&
+                  !hw.isMetaPressed) ||
+              (isMac &&
+                  hw.isMetaPressed &&
+                  !hw.isControlPressed &&
+                  !hw.isAltPressed &&
+                  !hw.isShiftPressed));
+      if (isExplicitPaste) {
+        unawaited(_pasteClipboard());
+        return KeyEventResult.handled;
+      }
+    }
+
     final popupVisible =
         session.phase == SessionPhase.connected &&
         widget.controller.autocompleteEnabled &&
@@ -459,14 +516,12 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
     }
 
     // Do not hijack keys when Ctrl / Alt / Meta modifiers are held
-    final hw = HardwareKeyboard.instance;
     if (hw.isControlPressed || hw.isAltPressed || hw.isMetaPressed) {
       return KeyEventResult.ignored;
     }
 
     final isPressOrRepeat =
         event is KeyDownEvent || event is KeyRepeatEvent;
-    final key = event.logicalKey;
 
     if (key == LogicalKeyboardKey.arrowDown) {
       if (isPressOrRepeat) {
@@ -919,7 +974,10 @@ class _TerminalSessionViewState extends State<TerminalSessionView> {
                               final selection = session.controller.selection;
                               if (selection != null) {
                                 await _copySelectionOrNotify();
-                              } else {
+                              } else if (widget
+                                  .controller
+                                  .shortcutConfig
+                                  .rightClickQuickPaste) {
                                 await _pasteClipboard();
                               }
                             },

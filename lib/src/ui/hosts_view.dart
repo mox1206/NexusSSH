@@ -19,9 +19,45 @@ class HostsVaultView extends StatefulWidget {
 
 class _HostsVaultViewState extends State<HostsVaultView> {
   final _omniCtrl = TextEditingController();
+  final _omniFocus = FocusNode();
+  int _lastSearchFocusRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _lastSearchFocusRevision = widget.controller.searchFocusRevision;
+    widget.controller.addListener(_handleControllerChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant HostsVaultView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleControllerChanged);
+      _lastSearchFocusRevision = widget.controller.searchFocusRevision;
+      widget.controller.addListener(_handleControllerChanged);
+    }
+  }
+
+  void _handleControllerChanged() {
+    final rev = widget.controller.searchFocusRevision;
+    if (rev != _lastSearchFocusRevision) {
+      _lastSearchFocusRevision = rev;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _omniFocus.requestFocus();
+        _omniCtrl.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _omniCtrl.text.length,
+        );
+      });
+    }
+  }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_handleControllerChanged);
+    _omniFocus.dispose();
     _omniCtrl.dispose();
     super.dispose();
   }
@@ -390,6 +426,7 @@ class _HostsVaultViewState extends State<HostsVaultView> {
                 Expanded(
                   child: TextField(
                     controller: _omniCtrl,
+                    focusNode: _omniFocus,
                     onChanged: (v) {
                       widget.controller.setSearchQuery(v);
                       setState(() {});
