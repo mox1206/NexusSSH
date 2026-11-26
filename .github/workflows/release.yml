@@ -1,0 +1,350 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v1.0.1); leave empty to use v<pubspec version>"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark GitHub Release as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Version Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_number: ${{ steps.meta.outputs.build_number }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version and validate tag
+        id: meta
+        shell: python3 {0}
+        run: |
+          import os, pathlib, re
+
+          pubspec = pathlib.Path("pubspec.yaml").read_text(encoding="utf-8")
+          m = re.search(
+              r"^\s*version:\s*([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)\+([0-9]+)\s*$",
+              pubspec,
+              re.MULTILINE,
+          )
+          if not m:
+              raise SystemExit("Failed to parse version: x.y.z+N from pubspec.yaml")
+
+          version, build_number = m.group(1), m.group(2)
+          ref_type = os.environ.get("GITHUB_REF_TYPE", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          input_tag = os.environ.get("INPUT_TAG", "").strip()
+          input_pre = os.environ.get("INPUT_PRERELEASE", "false").lower()
+
+          if ref_type == "tag":
+              tag = ref_name
+              expected = f"v{version}"
+              if tag != expected:
+                  raise SystemExit(
+                      f"Tag '{tag}' does not match pubspec.yaml version '{expected}'. "
+                      "Please bump pubspec.yaml before tagging."
+                  )
+              prerelease = "true" if "-" in version else "false"
+          else:
+              tag = input_tag or f"v{version}"
+              prerelease = "true" if (input_pre == "true" or "-" in version) else "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"version={version}\n")
+              out.write(f"build_number={build_number}\n")
+              out.write(f"tag={tag}\n")
+              out.write(f"prerelease={prerelease}\n")
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+
+  build-windows:
+    name: Build Windows (x64)
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Package Windows ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zipName = "nexus_ssh-${{ needs.prepare.outputs.version }}-windows-x64.zip"
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "dist/$zipName" -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android (Split APKs)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK Build-Tools 35.0.0
+        run: |
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0"
+
+      - name: Setup Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Configure Android Release Signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/release-keystore.jks
+            cat <<EOF > android/key.properties
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          storeFile=release-keystore.jks
+          EOF
+            echo "Android Release keystore configured."
+          else
+            echo "::warning::Android signing secrets are not configured; APK will be signed with debug keys and cannot upgrade cleanly across runners."
+          fi
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Android Split APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: Package Android APKs
+        run: |
+          mkdir -p dist
+          VERSION="${{ needs.prepare.outputs.version }}"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            if [ -f "$src" ]; then
+              cp "$src" "dist/nexus_ssh-${VERSION}-android-${abi}.apk"
+            fi
+          done
+          ls -lh dist/
+
+      - name: Cleanup Android signing material
+        if: always()
+        run: rm -f android/release-keystore.jks android/key.properties
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux (x64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libayatana-appindicator3-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Linux Release
+        run: flutter build linux --release
+
+      - name: Package Linux tar.gz
+        run: |
+          mkdir -p dist
+          tar -czf "dist/nexus_ssh-${{ needs.prepare.outputs.version }}-linux-x64.tar.gz" \
+            -C build/linux/x64/release/bundle .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS (Universal)
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust macOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build macOS Release
+        run: flutter build macos --release
+
+      - name: Package macOS ZIP
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/Build/Products/Release/nexus_ssh.app \
+            "dist/nexus_ssh-${{ needs.prepare.outputs.version }}-macos-universal.zip"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-universal
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release & latest.json
+    needs: [prepare, build-windows, build-android, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate release notes from recent commits
+        id: notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "${{ needs.prepare.outputs.tag }}^" 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD" > release-notes.md
+          else
+            git log -n 20 --pretty=format:"- %s (%h)" > release-notes.md
+          fi
+          cat release-notes.md
+
+      - name: Generate latest.json & SHA256SUMS.txt
+        run: |
+          python3 scripts/generate_update_manifest.py \
+            --repo "${{ github.repository }}" \
+            --tag "${{ needs.prepare.outputs.tag }}" \
+            --pubspec pubspec.yaml \
+            --artifacts-dir release-assets \
+            --output-dir release-assets \
+            --notes-file release-notes.md
+          cat release-assets/latest.json
+          cat release-assets/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Nexus SSH ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release-assets/*
