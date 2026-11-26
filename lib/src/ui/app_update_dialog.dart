@@ -6,7 +6,8 @@ import 'package:nexus_ssh/src/state/app_controller.dart';
 import 'package:nexus_ssh/src/ui/app_theme.dart';
 import 'package:nexus_ssh/src/update/app_update_models.dart';
 
-class AppUpdateDialog extends StatefulWidget {
+/// Standalone dialog wrapper around [AppUpdatePanel].
+class AppUpdateDialog extends StatelessWidget {
   const AppUpdateDialog({super.key, required this.controller});
 
   final AppController controller;
@@ -25,60 +26,11 @@ class AppUpdateDialog extends StatefulWidget {
   }
 
   @override
-  State<AppUpdateDialog> createState() => _AppUpdateDialogState();
-}
-
-class _AppUpdateDialogState extends State<AppUpdateDialog> {
-  late final TextEditingController _mirrorCtrl;
-  bool _showMirrorEditor = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _mirrorCtrl = TextEditingController(
-      text: widget.controller.updateState.mirrorPrefix,
-    );
-    _showMirrorEditor = _mirrorCtrl.text.isNotEmpty;
-  }
-
-  @override
-  void dispose() {
-    _mirrorCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _handleInstall() async {
-    final msg = await widget.controller.installDownloadedUpdate();
-    if (!mounted || msg == null || msg.isEmpty) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Future<void> _handleOpenReleasePage() async {
-    final opened = await widget.controller.openUpdateReleasePage();
-    if (!mounted) return;
-    if (!opened) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已复制 GitHub Release 链接到剪贴板')),
-      );
-    }
-  }
-
-  void _saveMirrorAndRecheck() {
-    widget.controller.setUpdateMirrorPrefix(_mirrorCtrl.text);
-    widget.controller.checkForUpdates();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: widget.controller,
+      listenable: controller,
       builder: (context, _) {
-        final state = widget.controller.updateState;
-        final manifest = state.manifest;
-        final asset = state.matchedAsset;
-        final canInAppInstall =
-            widget.controller.supportsInAppUpdateInstall && asset != null;
-
+        final state = controller.updateState;
         return AlertDialog(
           backgroundColor: NexusColors.bgCanvas,
           shape: RoundedRectangleBorder(
@@ -86,8 +38,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
             side: const BorderSide(color: NexusColors.borderActive),
           ),
           titlePadding: const EdgeInsets.fromLTRB(22, 20, 14, 0),
-          contentPadding: const EdgeInsets.fromLTRB(22, 14, 22, 6),
-          actionsPadding: const EdgeInsets.fromLTRB(18, 6, 18, 16),
+          contentPadding: const EdgeInsets.fromLTRB(22, 14, 22, 18),
           title: Row(
             children: [
               Container(
@@ -156,50 +107,127 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
           content: ConstrainedBox(
             constraints: const BoxConstraints(minWidth: 340, maxWidth: 460),
             child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildStatusBanner(state),
-                  if (state.hasAvailableUpdate && manifest != null) ...[
-                    const SizedBox(height: 12),
-                    _buildReleaseInfoCard(manifest, asset),
-                  ],
-                  if (state.phase == UpdatePhase.downloading ||
-                      state.phase == UpdatePhase.verifying) ...[
-                    const SizedBox(height: 12),
-                    _buildDownloadProgress(state),
-                  ],
-                  if (state.errorMessage != null &&
-                      state.errorMessage!.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: NexusColors.rose.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: NexusColors.rose.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      child: Text(
-                        state.errorMessage!,
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          color: NexusColors.rose,
-                          height: 1.45,
-                        ),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  _buildMirrorSection(state),
-                ],
+              child: AppUpdatePanel(
+                controller: controller,
+                onIgnored: () => Navigator.of(context).pop(),
               ),
             ),
           ),
-          actions: _buildActions(context, state, canInAppInstall),
+        );
+      },
+    );
+  }
+}
+
+/// Reusable update status, release notes, mirror config, and action bar panel.
+/// Embedded inside Settings ("关于与更新") and [AppUpdateDialog].
+class AppUpdatePanel extends StatefulWidget {
+  const AppUpdatePanel({
+    super.key,
+    required this.controller,
+    this.onIgnored,
+  });
+
+  final AppController controller;
+  final VoidCallback? onIgnored;
+
+  @override
+  State<AppUpdatePanel> createState() => _AppUpdatePanelState();
+}
+
+class _AppUpdatePanelState extends State<AppUpdatePanel> {
+  late final TextEditingController _mirrorCtrl;
+  bool _showMirrorEditor = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _mirrorCtrl = TextEditingController(
+      text: widget.controller.updateState.mirrorPrefix,
+    );
+    _showMirrorEditor = _mirrorCtrl.text.isNotEmpty;
+  }
+
+  @override
+  void dispose() {
+    _mirrorCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleInstall() async {
+    final msg = await widget.controller.installDownloadedUpdate();
+    if (!mounted || msg == null || msg.isEmpty) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _handleOpenReleasePage() async {
+    final opened = await widget.controller.openUpdateReleasePage();
+    if (!mounted) return;
+    if (!opened) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已复制 GitHub Release 链接到剪贴板')),
+      );
+    }
+  }
+
+  void _saveMirrorAndRecheck() {
+    widget.controller.setUpdateMirrorPrefix(_mirrorCtrl.text);
+    widget.controller.checkForUpdates();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) {
+        final state = widget.controller.updateState;
+        final manifest = state.manifest;
+        final asset = state.matchedAsset;
+        final canInAppInstall =
+            widget.controller.supportsInAppUpdateInstall && asset != null;
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildStatusBanner(state),
+            if (state.hasAvailableUpdate && manifest != null) ...[
+              const SizedBox(height: 12),
+              _buildReleaseInfoCard(manifest, asset),
+            ],
+            if (state.phase == UpdatePhase.downloading ||
+                state.phase == UpdatePhase.verifying) ...[
+              const SizedBox(height: 12),
+              _buildDownloadProgress(state),
+            ],
+            if (state.errorMessage != null &&
+                state.errorMessage!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: NexusColors.rose.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: NexusColors.rose.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: Text(
+                  state.errorMessage!,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: NexusColors.rose,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            _buildMirrorSection(state),
+            const SizedBox(height: 16),
+            _buildActionRow(state, canInAppInstall),
+          ],
         );
       },
     );
@@ -210,7 +238,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
       UpdatePhase.checking => (
         NexusColors.cyan,
         Icons.sync_rounded,
-        '正在从 GitHub Release 检查最新版本号...',
+        '正在从 GitHub Release 检查最新版本...',
       ),
       UpdatePhase.upToDate => (
         NexusColors.emerald,
@@ -513,11 +541,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
     );
   }
 
-  List<Widget> _buildActions(
-    BuildContext context,
-    UpdateState state,
-    bool canInAppInstall,
-  ) {
+  Widget _buildActionRow(UpdateState state, bool canInAppInstall) {
     final actions = <Widget>[];
 
     if (state.hasAvailableUpdate &&
@@ -528,7 +552,7 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
         TextButton(
           onPressed: () {
             widget.controller.ignoreAvailableUpdate();
-            Navigator.of(context).pop();
+            widget.onIgnored?.call();
           },
           child: const Text(
             '忽略此版本',
@@ -586,6 +610,11 @@ class _AppUpdateDialogState extends State<AppUpdateDialog> {
       );
     }
 
-    return actions;
+    return Wrap(
+      alignment: WrapAlignment.end,
+      spacing: 8,
+      runSpacing: 8,
+      children: actions,
+    );
   }
 }

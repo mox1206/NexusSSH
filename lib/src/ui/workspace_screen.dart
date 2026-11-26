@@ -7,14 +7,13 @@ import 'package:nexus_ssh/src/state/app_controller.dart';
 import 'package:nexus_ssh/src/ui/app_lock_overlay.dart';
 import 'package:nexus_ssh/src/ui/app_lock_settings_dialog.dart';
 import 'package:nexus_ssh/src/ui/app_theme.dart';
-import 'package:nexus_ssh/src/ui/app_update_dialog.dart';
 import 'package:nexus_ssh/src/ui/desktop_close_dialog.dart';
 import 'package:nexus_ssh/src/ui/host_editor_dialog.dart';
 import 'package:nexus_ssh/src/ui/host_key_dialog.dart';
 import 'package:nexus_ssh/src/ui/hosts_view.dart';
+import 'package:nexus_ssh/src/ui/settings_dialog.dart';
 import 'package:nexus_ssh/src/ui/snippets_panel.dart';
 import 'package:nexus_ssh/src/ui/terminal_session_view.dart';
-import 'package:nexus_ssh/src/ui/webdav_sync_dialog.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   const WorkspaceScreen({super.key, required this.controller});
@@ -976,42 +975,27 @@ class _CollapsedSidebarContent extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 8),
           child: Column(
             children: [
-              _RailIconButton(
-                tooltip: controller.syncingWebDav
-                    ? '正在同步 WebDAV...'
-                    : (davConfigured ? 'WebDAV 已连接（点击配置）' : 'WebDAV 云同步'),
-                height: 32,
-                customChild: controller.syncingWebDav
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 1.8),
-                      )
-                    : Icon(
-                        davConfigured
-                            ? Icons.cloud_done_rounded
-                            : Icons.cloud_outlined,
-                        size: 16.5,
-                        color: davConfigured
-                            ? NexusColors.emerald
-                            : NexusColors.textSecondary,
-                      ),
-                onTap: () =>
-                    WebDavSyncDialog.show(context, controller: controller),
-              ),
-              if (davConfigured && !controller.syncingWebDav) ...[
-                const SizedBox(height: 2),
+              if (davConfigured) ...[
                 _RailIconButton(
-                  tooltip:
-                      '立即执行（${controller.webDavConfig.defaultSyncMode.label}）',
+                  tooltip: controller.syncingWebDav
+                      ? '正在同步 WebDAV...'
+                      : '立即执行（${controller.webDavConfig.defaultSyncMode.label}）',
                   height: 32,
-                  icon: _syncModeIcon(controller.webDavConfig.defaultSyncMode),
-                  iconSize: 16,
-                  iconColor: NexusColors.emerald,
-                  onTap: onQuickWebDavSync,
+                  customChild: controller.syncingWebDav
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 1.8),
+                        )
+                      : Icon(
+                          _syncModeIcon(controller.webDavConfig.defaultSyncMode),
+                          size: 16,
+                          color: NexusColors.emerald,
+                        ),
+                  onTap: controller.syncingWebDav ? () {} : onQuickWebDavSync,
                 ),
+                const SizedBox(height: 2),
               ],
-              const SizedBox(height: 2),
               _RailIconButton(
                 tooltip: appLockEnabled ? '安全中心（应用锁已开启）' : '安全中心（未加锁）',
                 height: 32,
@@ -1036,32 +1020,18 @@ class _CollapsedSidebarContent extends StatelessWidget {
                   onTap: controller.lockNow,
                 ),
               ],
-              if (controller.isDesktopTraySupported) ...[
-                const SizedBox(height: 2),
-                _RailIconButton(
-                  tooltip: '关闭行为：${controller.closeBehavior.label}',
-                  height: 32,
-                  icon: Icons.tune_rounded,
-                  iconSize: 16,
-                  iconColor: NexusColors.textSecondary,
-                  onTap: () => DesktopCloseSettingsDialog.show(
-                    context,
-                    controller: controller,
-                  ),
-                ),
-              ],
               const SizedBox(height: 2),
               _RailIconButton(
                 tooltip: controller.hasUnignoredUpdate
-                    ? '发现新版本 v${controller.updateState.manifest?.version ?? ''}'
-                    : '检查更新 (${controller.updateState.currentVersion.displayLabel})',
+                    ? '设置（发现新版本 v${controller.updateState.manifest?.version ?? ''}）'
+                    : '设置',
                 height: 32,
-                customChild: _UpdateIconWithBadge(
+                customChild: _SettingsIconWithBadge(
                   hasUpdate: controller.hasUnignoredUpdate,
-                  size: 16,
+                  size: 16.5,
                 ),
                 onTap: () =>
-                    AppUpdateDialog.show(context, controller: controller),
+                    SettingsDialog.show(context, controller: controller),
               ),
             ],
           ),
@@ -1295,36 +1265,24 @@ class _SidebarFooterDock extends StatelessWidget {
     final appLockEnabled = controller.appLockConfig.enabled;
 
     final buttons = <Widget>[
-      _DockIconButton(
-        tooltip: controller.syncingWebDav
-            ? '正在同步 WebDAV...'
-            : (davConfigured ? 'WebDAV 已连接（点击配置）' : 'WebDAV 云同步'),
-        activeAccent: davConfigured,
-        onTap: () => WebDavSyncDialog.show(context, controller: controller),
-        child: controller.syncingWebDav
-            ? const SizedBox(
-                width: 15,
-                height: 15,
-                child: CircularProgressIndicator(strokeWidth: 1.8),
-              )
-            : Icon(
-                davConfigured ? Icons.cloud_done_rounded : Icons.cloud_outlined,
-                size: 17,
-                color: davConfigured
-                    ? NexusColors.emerald
-                    : NexusColors.textSecondary,
-              ),
-      ),
-      if (davConfigured && !controller.syncingWebDav)
+      if (davConfigured)
         _DockIconButton(
-          tooltip: '立即执行（${controller.webDavConfig.defaultSyncMode.label}）',
+          tooltip: controller.syncingWebDav
+              ? '正在同步 WebDAV...'
+              : '立即执行（${controller.webDavConfig.defaultSyncMode.label}）',
           activeAccent: true,
-          onTap: onQuickWebDavSync,
-          child: Icon(
-            _syncModeIcon(controller.webDavConfig.defaultSyncMode),
-            size: 16.5,
-            color: NexusColors.emerald,
-          ),
+          onTap: controller.syncingWebDav ? () {} : onQuickWebDavSync,
+          child: controller.syncingWebDav
+              ? const SizedBox(
+                  width: 15,
+                  height: 15,
+                  child: CircularProgressIndicator(strokeWidth: 1.8),
+                )
+              : Icon(
+                  _syncModeIcon(controller.webDavConfig.defaultSyncMode),
+                  size: 16.5,
+                  color: NexusColors.emerald,
+                ),
         ),
       _DockIconButton(
         tooltip: appLockEnabled ? '安全中心（应用锁已开启）' : '安全中心（未加锁）',
@@ -1350,26 +1308,15 @@ class _SidebarFooterDock extends StatelessWidget {
             color: NexusColors.emerald,
           ),
         ),
-      if (controller.isDesktopTraySupported)
-        _DockIconButton(
-          tooltip: '关闭行为：${controller.closeBehavior.label}',
-          onTap: () =>
-              DesktopCloseSettingsDialog.show(context, controller: controller),
-          child: const Icon(
-            Icons.tune_rounded,
-            size: 16.5,
-            color: NexusColors.textSecondary,
-          ),
-        ),
       _DockIconButton(
         tooltip: controller.hasUnignoredUpdate
-            ? '发现新版本 v${controller.updateState.manifest?.version ?? ''}'
-            : '检查更新 (${controller.updateState.currentVersion.displayLabel})',
+            ? '设置（发现新版本 v${controller.updateState.manifest?.version ?? ''}）'
+            : '设置',
         activeAccent: controller.hasUnignoredUpdate,
-        onTap: () => AppUpdateDialog.show(context, controller: controller),
-        child: _UpdateIconWithBadge(
+        onTap: () => SettingsDialog.show(context, controller: controller),
+        child: _SettingsIconWithBadge(
           hasUpdate: controller.hasUnignoredUpdate,
-          size: 16.5,
+          size: 17,
         ),
       ),
     ];
@@ -1388,8 +1335,8 @@ class _SidebarFooterDock extends StatelessWidget {
   }
 }
 
-class _UpdateIconWithBadge extends StatelessWidget {
-  const _UpdateIconWithBadge({required this.hasUpdate, required this.size});
+class _SettingsIconWithBadge extends StatelessWidget {
+  const _SettingsIconWithBadge({required this.hasUpdate, required this.size});
 
   final bool hasUpdate;
   final double size;
@@ -1400,7 +1347,7 @@ class _UpdateIconWithBadge extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         Icon(
-          Icons.system_update_alt_rounded,
+          Icons.settings_outlined,
           size: size,
           color: hasUpdate ? NexusColors.emerald : NexusColors.textSecondary,
         ),

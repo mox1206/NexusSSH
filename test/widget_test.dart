@@ -563,7 +563,7 @@ void main() {
 
       expect(find.text('SSH · demo@10.0.0.10'), findsOneWidget);
       expect(find.text('Snippets'), findsOneWidget);
-      expect(find.byTooltip('WebDAV 云同步'), findsOneWidget);
+      expect(find.byTooltip('设置'), findsOneWidget);
 
       // Click the Termius-style host tile to connect
       await tester.tap(find.text('SSH · demo@10.0.0.10'));
@@ -908,13 +908,15 @@ void main() {
       desktop.triggerTrayShow();
       expect(desktop.showCount, equals(1));
 
-      // 4. User can change remembered preference via bottom-left settings button
-      await tester.tap(find.byIcon(Icons.tune_rounded));
+      // 4. User can change remembered preference via unified Settings Center
+      await tester.tap(find.byTooltip('设置'));
       await tester.pumpAndSettle();
       expect(find.text('关闭窗口行为'), findsOneWidget);
       await tester.tap(find.text('直接退出'));
       await tester.pumpAndSettle();
       expect(controller.closeBehavior, equals(DesktopCloseBehavior.exit));
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
 
       // 5. Closing now exits directly
       desktop.triggerCloseRequest();
@@ -1525,14 +1527,14 @@ void main() {
       await tester.pumpWidget(NexusSshApp(controller: controller));
       await tester.pumpAndSettle();
 
-      // Expanded sidebar shows brand title, action row, core nav, collapsible groups, and icon dock
+      // Expanded sidebar shows brand title, action row, core nav, collapsible groups, and decluttered dock
       expect(find.text('Nexus SSH'), findsOneWidget);
       expect(find.text('新建主机'), findsOneWidget);
       expect(find.byTooltip('本地终端 · PowerShell 7'), findsOneWidget);
       expect(find.text('GROUPS'), findsOneWidget);
-      expect(find.byTooltip('WebDAV 云同步'), findsOneWidget);
       expect(find.byTooltip('安全中心（未加锁）'), findsOneWidget);
-      expect(find.byIcon(Icons.tune_rounded), findsOneWidget);
+      expect(find.byTooltip('设置'), findsOneWidget);
+      expect(find.byTooltip('WebDAV 云同步'), findsNothing);
 
       // Fold GROUPS section and verify state flips
       await tester.tap(find.text('GROUPS'));
@@ -1546,7 +1548,7 @@ void main() {
       expect(find.text('Nexus SSH'), findsNothing);
       expect(find.byKey(const ValueKey('sidebar_expand_btn')), findsOneWidget);
       expect(find.byTooltip('新建主机'), findsOneWidget);
-      expect(find.byTooltip('WebDAV 云同步'), findsOneWidget);
+      expect(find.byTooltip('设置'), findsOneWidget);
 
       // Re-initialize a brand-new controller pointing at the same dataDir -> persisted states restore
       final controller2 = AppController(
@@ -1563,6 +1565,19 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.sidebarCollapsed, isFalse);
       expect(find.text('Nexus SSH'), findsOneWidget);
+
+      // Opening unified Settings Center exposes General, Shortcuts, WebDAV Sync, and Updates tabs
+      await tester.tap(find.byTooltip('设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('关闭窗口行为'), findsOneWidget);
+      await tester.tap(find.text('快捷键'));
+      await tester.pumpAndSettle();
+      expect(find.text('桌面快捷键'), findsOneWidget);
+      await tester.tap(find.text('云同步'));
+      await tester.pumpAndSettle();
+      expect(find.text('配置 WebDAV 云同步'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
 
       // Opening Security Center dialog renders ListTile/SwitchListTile inside Material without framework assertions
       await tester.tap(find.byTooltip('安全中心（未加锁）'));

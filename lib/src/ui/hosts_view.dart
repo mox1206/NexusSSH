@@ -4,10 +4,9 @@ import 'package:nexus_ssh/src/models/ssh_models.dart';
 import 'package:nexus_ssh/src/state/app_controller.dart';
 import 'package:nexus_ssh/src/ui/app_lock_settings_dialog.dart';
 import 'package:nexus_ssh/src/ui/app_theme.dart';
-import 'package:nexus_ssh/src/ui/app_update_dialog.dart';
 import 'package:nexus_ssh/src/ui/host_editor_dialog.dart';
+import 'package:nexus_ssh/src/ui/settings_dialog.dart';
 import 'package:nexus_ssh/src/ui/snippets_panel.dart';
-import 'package:nexus_ssh/src/ui/webdav_sync_dialog.dart';
 
 class HostsVaultView extends StatefulWidget {
   const HostsVaultView({super.key, required this.controller});
@@ -266,10 +265,8 @@ class _HostsVaultViewState extends State<HostsVaultView> {
                 ),
                 const Spacer(),
                 IconButton(
-                  tooltip: widget.controller.hasUnignoredUpdate
-                      ? '发现新版本 v${widget.controller.updateState.manifest?.version ?? ''}'
-                      : '检查更新',
-                  onPressed: () => AppUpdateDialog.show(
+                  tooltip: '命令片段',
+                  onPressed: () => SnippetsPanel.showModal(
                     context,
                     controller: widget.controller,
                   ),
@@ -279,31 +276,11 @@ class _HostsVaultViewState extends State<HostsVaultView> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     padding: EdgeInsets.zero,
                     backgroundColor: NexusColors.bgSurface,
-                    foregroundColor: widget.controller.hasUnignoredUpdate
-                        ? NexusColors.emerald
-                        : NexusColors.textSecondary,
+                    foregroundColor: NexusColors.textSecondary,
                   ),
-                  icon: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      const Icon(Icons.system_update_alt_rounded, size: 18),
-                      if (widget.controller.hasUnignoredUpdate)
-                        Positioned(
-                          right: -2,
-                          top: -2,
-                          child: Container(
-                            width: 7,
-                            height: 7,
-                            decoration: const BoxDecoration(
-                              color: NexusColors.emerald,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                  icon: const Icon(Icons.code_rounded, size: 19),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 IconButton(
                   tooltip: '应用锁与安全',
                   onPressed: () => AppLockSettingsDialog.show(
@@ -330,10 +307,12 @@ class _HostsVaultViewState extends State<HostsVaultView> {
                     size: 18,
                   ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 IconButton(
-                  tooltip: '命令片段',
-                  onPressed: () => SnippetsPanel.showModal(
+                  tooltip: widget.controller.hasUnignoredUpdate
+                      ? '设置（发现新版本 v${widget.controller.updateState.manifest?.version ?? ''}）'
+                      : '设置',
+                  onPressed: () => SettingsDialog.show(
                     context,
                     controller: widget.controller,
                   ),
@@ -343,41 +322,31 @@ class _HostsVaultViewState extends State<HostsVaultView> {
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     padding: EdgeInsets.zero,
                     backgroundColor: NexusColors.bgSurface,
-                    foregroundColor: NexusColors.textSecondary,
-                  ),
-                  icon: const Icon(Icons.code_rounded, size: 19),
-                ),
-                const SizedBox(width: 6),
-                IconButton(
-                  tooltip: 'WebDAV 云同步',
-                  onPressed: () => WebDavSyncDialog.show(
-                    context,
-                    controller: widget.controller,
-                  ),
-                  style: IconButton.styleFrom(
-                    fixedSize: const Size(38, 38),
-                    minimumSize: const Size(38, 38),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    padding: EdgeInsets.zero,
-                    backgroundColor: NexusColors.bgSurface,
-                    foregroundColor: widget.controller.webDavConfig.isConfigured
+                    foregroundColor: widget.controller.hasUnignoredUpdate
                         ? NexusColors.emerald
                         : NexusColors.textSecondary,
                   ),
-                  icon: widget.controller.syncingWebDav
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Icon(
-                          widget.controller.webDavConfig.isConfigured
-                              ? Icons.cloud_done_outlined
-                              : Icons.cloud_upload_outlined,
-                          size: 19,
+                  icon: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      const Icon(Icons.settings_outlined, size: 19),
+                      if (widget.controller.hasUnignoredUpdate)
+                        Positioned(
+                          right: -2,
+                          top: -2,
+                          child: Container(
+                            width: 7,
+                            height: 7,
+                            decoration: const BoxDecoration(
+                              color: NexusColors.emerald,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
                         ),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 IconButton.filledTonal(
                   tooltip: '新建主机',
                   onPressed: () => _openCreateOrEdit(),
